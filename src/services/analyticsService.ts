@@ -1,7 +1,7 @@
 import { Task } from '../models/Task';
 import { Project } from '../models/Project';
 import { WorkLog } from '../models/WorkLog';
-import { TaskStatus, TaskPriority } from '../types';
+import { TaskStatus } from '../types';
 import { logger } from '../utils/logger';
 
 interface TaskStats {
@@ -29,57 +29,61 @@ interface UserProductivity {
 }
 
 class AnalyticsService {
-  async getTaskStats(projectId: string, startDate?: Date, endDate?: Date): Promise<TaskStats> {
+  /* =========================
+     TASK ANALYTICS
+  ========================= */
+
+  async getTaskStats(
+    projectId: string,
+    startDate?: Date,
+    endDate?: Date
+  ): Promise<TaskStats> {
     try {
-      const query: any = { project: projectId };
-
-      if (startDate || endDate) {
-        query.createdAt = {};
-        if (startDate) query.createdAt.$gte = startDate;
-        if (endDate) query.createdAt.$lte = endDate;
-      }
-
-      const tasks = await Task.find(query);
+      const tasks = await Task.find(
+        this.buildDateQuery({ project: projectId }, 'createdAt', startDate, endDate)
+      );
 
       const byStatus: Record<string, number> = {};
       const byPriority: Record<string, number> = {};
 
+      let completedCount = 0;
+      let totalCompletionTime = 0;
+
       tasks.forEach((task) => {
         byStatus[task.status] = (byStatus[task.status] || 0) + 1;
         byPriority[task.priority] = (byPriority[task.priority] || 0) + 1;
-      });
 
-      const completedTasks = tasks.filter((t) => t.status === TaskStatus.DONE);
-      const completionRate =
-        tasks.length > 0 ? (completedTasks.length / tasks.length) * 100 : 0;
-
-      // Calculate average completion time
-      let totalCompletionTime = 0;
-      let completedCount = 0;
-
-      completedTasks.forEach((task) => {
-        if (task.createdAt && task.updatedAt) {
-          const timeToComplete = task.updatedAt.getTime() - task.createdAt.getTime();
-          totalCompletionTime += timeToComplete;
+        if (task.status === TaskStatus.DONE && task.createdAt && task.updatedAt) {
           completedCount++;
+          totalCompletionTime +=
+            task.updatedAt.getTime() - task.createdAt.getTime();
         }
       });
 
-      const averageCompletionTime =
-        completedCount > 0 ? totalCompletionTime / completedCount / (1000 * 60 * 60 * 24) : 0;
+      const completionRate =
+        tasks.length > 0 ? (completedCount / tasks.length) * 100 : 0;
+
+      const avgCompletionTime =
+        completedCount > 0
+          ? totalCompletionTime / completedCount / 86400000
+          : 0;
 
       return {
         totalTasks: tasks.length,
         byStatus,
         byPriority,
-        completionRate: Math.round(completionRate * 100) / 100,
-        averageCompletionTime: Math.round(averageCompletionTime * 100) / 100,
+        completionRate: Number(completionRate.toFixed(2)),
+        averageCompletionTime: Number(avgCompletionTime.toFixed(2)),
       };
     } catch (error) {
       logger.error('Error getting task stats:', error);
       throw error;
     }
   }
+
+  /* =========================
+     PROJECT ANALYTICS
+  ========================= */
 
   async getProjectStats(userId: string): Promise<ProjectStats> {
     try {
@@ -90,16 +94,12 @@ class AnalyticsService {
       const projectIds = projects.map((p) => p._id);
       const tasks = await Task.find({ project: { $in: projectIds } });
 
-      const activeProjects = projects.filter((p) => p.isActive).length;
-      const completedProjects = projects.filter((p) => p.status === 'completed').length;
-      const completedTasks = tasks.filter((t) => t.status === TaskStatus.DONE).length;
-
       return {
         totalProjects: projects.length,
-        activeProjects,
-        completedProjects,
+        activeProjects: projects.filter((p) => p.isActive).length,
+        completedProjects: projects.filter((p) => p.status === 'completed').length,
         totalTasks: tasks.length,
-        completedTasks,
+        completedTasks: tasks.filter((t) => t.status === TaskStatus.DONE).length,
       };
     } catch (error) {
       logger.error('Error getting project stats:', error);
@@ -107,55 +107,59 @@ class AnalyticsService {
     }
   }
 
+  /* =========================
+     USER PRODUCTIVITY
+  ========================= */
+
   async getUserProductivity(
     userId: string,
     startDate?: Date,
     endDate?: Date
   ): Promise<UserProductivity> {
     try {
-      const query: any = { assignee: userId };
-
-      if (startDate || endDate) {
-        query.updatedAt = {};
-        if (startDate) query.updatedAt.$gte = startDate;
-        if (endDate) query.updatedAt.$lte = endDate;
-      }
-
-      const tasks = await Task.find(query);
+      const tasks = await Task.find(
+        this.buildDateQuery({ assignee: userId }, 'updatedAt', startDate, endDate)
+      );
 
       const tasksByPriority: Record<string, number> = {};
-      let totalCompletionTime = 0;
       let completedCount = 0;
+      let totalCompletionTime = 0;
 
       tasks.forEach((task) => {
-        tasksByPriority[task.priority] = (tasksByPriority[task.priority] || 0) + 1;
+        tasksByPriority[task.priority] =
+          (tasksByPriority[task.priority] || 0) + 1;
 
         if (task.status === TaskStatus.DONE && task.createdAt && task.updatedAt) {
-          const timeToComplete = task.updatedAt.getTime() - task.createdAt.getTime();
-          totalCompletionTime += timeToComplete;
           completedCount++;
+          totalCompletionTime +=
+            task.updatedAt.getTime() - task.createdAt.getTime();
         }
       });
 
-      // Get work logs
-      const workLogQuery: any = { user: userId };
-      if (startDate || endDate) {
-        workLogQuery.date = {};
-        if (startDate) workLogQuery.date.$gte = startDate;
-        if (endDate) workLogQuery.date.$lte = endDate;
-      }
+      const workLogs = await WorkLog.find(
+        this.buildDateQuery({ user: userId }, 'date', startDate, endDate)
+      );
 
-      const workLogs = await WorkLog.find(workLogQuery);
-      const totalTimeLogged = workLogs.reduce((sum, log) => sum + log.timeSpent, 0);
+      const totalTimeLogged = workLogs.reduce(
+        (sum, log) => sum + log.timeSpent,
+        0
+      );
 
       return {
-        tasksCompleted: tasks.filter((t) => t.status === TaskStatus.DONE).length,
-        tasksInProgress: tasks.filter((t) => t.status === TaskStatus.IN_PROGRESS).length,
+        tasksCompleted: completedCount,
+        tasksInProgress: tasks.filter(
+          (t) => t.status === TaskStatus.IN_PROGRESS
+        ).length,
         totalTimeLogged,
         averageTaskCompletionTime:
           completedCount > 0
-            ? Math.round((totalCompletionTime / completedCount / (1000 * 60 * 60 * 24)) * 100) /
-              100
+            ? Number(
+                (
+                  totalCompletionTime /
+                  completedCount /
+                  86400000
+                ).toFixed(2)
+              )
             : 0,
         tasksByPriority,
       };
@@ -165,7 +169,14 @@ class AnalyticsService {
     }
   }
 
-  async getProjectVelocity(projectId: string, weeks: number = 4): Promise<any[]> {
+  /* =========================
+     VELOCITY & BURNDOWN
+  ========================= */
+
+  async getProjectVelocity(
+    projectId: string,
+    weeks: number = 4
+  ): Promise<any[]> {
     try {
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - weeks * 7);
@@ -176,22 +187,20 @@ class AnalyticsService {
         updatedAt: { $gte: startDate },
       });
 
-      const velocityByWeek: Record<string, { completed: number; points: number }> = {};
+      const velocity: Record<string, { completed: number; points: number }> =
+        {};
 
       tasks.forEach((task) => {
-        const weekStart = new Date(task.updatedAt);
-        weekStart.setDate(weekStart.getDate() - weekStart.getDay());
-        const weekKey = weekStart.toISOString().split('T')[0];
+        const week = new Date(task.updatedAt);
+        week.setDate(week.getDate() - week.getDay());
+        const key = week.toISOString().split('T')[0];
 
-        if (!velocityByWeek[weekKey]) {
-          velocityByWeek[weekKey] = { completed: 0, points: 0 };
-        }
-
-        velocityByWeek[weekKey].completed++;
-        velocityByWeek[weekKey].points += task.estimatedHours || 0;
+        velocity[key] ??= { completed: 0, points: 0 };
+        velocity[key].completed++;
+        velocity[key].points += task.estimatedHours || 0;
       });
 
-      return Object.entries(velocityByWeek).map(([week, data]) => ({
+      return Object.entries(velocity).map(([week, data]) => ({
         week,
         ...data,
       }));
@@ -201,38 +210,41 @@ class AnalyticsService {
     }
   }
 
-  async getBurndownChart(projectId: string, sprintDays: number = 14): Promise<any[]> {
+  async getBurndownChart(
+    projectId: string,
+    sprintDays: number = 14
+  ): Promise<any[]> {
     try {
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - sprintDays);
 
       const tasks = await Task.find({ project: projectId });
-      const totalPoints = tasks.reduce((sum, task) => sum + (task.estimatedHours || 0), 0);
+      const totalPoints = tasks.reduce(
+        (sum, t) => sum + (t.estimatedHours || 0),
+        0
+      );
 
       const burndown: any[] = [];
-      let remainingPoints = totalPoints;
 
       for (let i = 0; i <= sprintDays; i++) {
         const date = new Date(startDate);
         date.setDate(date.getDate() + i);
 
-        const completedByDate = await Task.find({
+        const completed = await Task.find({
           project: projectId,
           status: TaskStatus.DONE,
           updatedAt: { $lte: date },
         });
 
-        const pointsCompleted = completedByDate.reduce(
-          (sum, task) => sum + (task.estimatedHours || 0),
+        const completedPoints = completed.reduce(
+          (sum, t) => sum + (t.estimatedHours || 0),
           0
         );
-
-        remainingPoints = totalPoints - pointsCompleted;
 
         burndown.push({
           date: date.toISOString().split('T')[0],
           ideal: totalPoints - (totalPoints / sprintDays) * i,
-          actual: remainingPoints,
+          actual: totalPoints - completedPoints,
         });
       }
 
@@ -241,6 +253,27 @@ class AnalyticsService {
       logger.error('Error getting burndown chart:', error);
       throw error;
     }
+  }
+
+  /* =========================
+     HELPERS
+  ========================= */
+
+  private buildDateQuery(
+    base: any,
+    field: string,
+    startDate?: Date,
+    endDate?: Date
+  ) {
+    if (!startDate && !endDate) return base;
+
+    return {
+      ...base,
+      [field]: {
+        ...(startDate && { $gte: startDate }),
+        ...(endDate && { $lte: endDate }),
+      },
+    };
   }
 }
 

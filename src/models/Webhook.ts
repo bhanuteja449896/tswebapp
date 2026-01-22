@@ -10,6 +10,7 @@ const webhookSchema = new Schema<IWebhookDocument>(
       type: String,
       required: [true, 'Webhook URL is required'],
       match: [/^https?:\/\/.+/, 'Please provide a valid URL'],
+      trim: true,
     },
     events: [
       {
@@ -27,12 +28,15 @@ const webhookSchema = new Schema<IWebhookDocument>(
     secret: {
       type: String,
       required: true,
+      select: false, // hide secret by default in queries
     },
     isActive: { type: Boolean, default: true, index: true },
     lastTriggered: { type: Date },
   },
   {
     timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
   }
 );
 
@@ -40,6 +44,20 @@ const webhookSchema = new Schema<IWebhookDocument>(
 webhookSchema.pre('save', function (next) {
   if (this.isNew && !this.secret) {
     this.secret = crypto.randomBytes(32).toString('hex');
+  }
+  next();
+});
+
+// Optional: Update lastTriggered timestamp
+webhookSchema.methods.markTriggered = function () {
+  this.lastTriggered = new Date();
+  return this.save();
+};
+
+// Optional: Validate at least one event is selected
+webhookSchema.pre('validate', function (next) {
+  if (!this.events || this.events.length === 0) {
+    this.invalidate('events', 'At least one webhook event must be selected');
   }
   next();
 });

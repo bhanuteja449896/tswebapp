@@ -2,8 +2,12 @@ import { Request, Response, NextFunction } from 'express';
 import { validationResult, ValidationChain } from 'express-validator';
 import { AppError } from './auth';
 
+/**
+ * Middleware to validate request using express-validator chains.
+ * Throws AppError if validation fails.
+ */
 export const validate = (validations: ValidationChain[]) => {
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
     // Run all validations
     await Promise.all(validations.map((validation) => validation.run(req)));
 
@@ -12,13 +16,11 @@ export const validate = (validations: ValidationChain[]) => {
       return next();
     }
 
-    const extractedErrors: Array<{ field: string; message: string }> = [];
-    errors.array().forEach((err: any) => {
-      extractedErrors.push({
-        field: err.path || err.param,
-        message: err.msg,
-      });
-    });
+    // Format errors
+    const extractedErrors = errors.array().map((err) => ({
+      field: err.path || err.param,
+      message: err.msg,
+    }));
 
     next(
       new AppError(
@@ -29,17 +31,25 @@ export const validate = (validations: ValidationChain[]) => {
   };
 };
 
+/**
+ * Middleware to sanitize request inputs to prevent XSS.
+ */
 export const sanitizeInput = (req: Request, _res: Response, next: NextFunction): void => {
-  // Remove any potentially dangerous characters or scripts
   const sanitize = (obj: any): any => {
     if (typeof obj === 'string') {
-      return obj.trim().replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+      // Remove scripts and trim whitespace
+      return obj.trim().replace(
+        /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi,
+        ''
+      );
     }
+
     if (typeof obj === 'object' && obj !== null) {
       for (const key in obj) {
         obj[key] = sanitize(obj[key]);
       }
     }
+
     return obj;
   };
 

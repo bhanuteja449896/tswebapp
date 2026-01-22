@@ -3,6 +3,7 @@ import { ITeam } from '../types';
 
 interface ITeamDocument extends ITeam, Document {}
 
+// Team schema
 const teamSchema = new Schema<ITeamDocument>(
   {
     name: {
@@ -29,10 +30,11 @@ const teamSchema = new Schema<ITeamDocument>(
   {
     timestamps: true,
     toJSON: { virtuals: true },
+    toObject: { virtuals: true }, // Include virtuals in toObject as well
   }
 );
 
-// Indexes
+// Indexes for search and queries
 teamSchema.index({ owner: 1 });
 teamSchema.index({ members: 1 });
 teamSchema.index({ name: 'text', description: 'text' });
@@ -46,10 +48,22 @@ teamSchema.virtual('projectCount').get(function () {
   return this.projects.length;
 });
 
-// Ensure owner is in members
+// Pre-save hook: ensure owner is a member
 teamSchema.pre('save', function (next) {
   if (!this.members.includes(this.owner)) {
     this.members.push(this.owner);
+  }
+  next();
+});
+
+// Optional: Pre-update hook to enforce owner in members (for updates via findOneAndUpdate)
+teamSchema.pre('findOneAndUpdate', function (next) {
+  const update = this.getUpdate() as any;
+  if (update.$addToSet) {
+    if (!update.$addToSet.members) update.$addToSet.members = [];
+    if (!update.$addToSet.members.includes(update.owner)) {
+      update.$addToSet.members.push(update.owner);
+    }
   }
   next();
 });

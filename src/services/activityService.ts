@@ -12,7 +12,32 @@ interface CreateActivityOptions {
   taskId?: string;
 }
 
+interface PaginatedResult<T> {
+  activities: T[];
+  total: number;
+}
+
 class ActivityService {
+  /* =========================
+     Helpers
+  ========================= */
+
+  private getPagination(page: number, limit: number) {
+    return {
+      skip: (page - 1) * limit,
+      limit,
+    };
+  }
+
+  private logAndThrow(message: string, error: unknown): never {
+    logger.error(message, error);
+    throw error;
+  }
+
+  /* =========================
+     Create Activity
+  ========================= */
+
   async createActivity(options: CreateActivityOptions): Promise<void> {
     try {
       await Activity.create({
@@ -22,7 +47,7 @@ class ActivityService {
           type: options.targetType,
           id: options.targetId,
         },
-        metadata: options.metadata || {},
+        metadata: options.metadata ?? {},
         project: options.projectId,
         task: options.taskId,
       });
@@ -31,18 +56,21 @@ class ActivityService {
         `Activity created: ${options.action} on ${options.targetType} by ${options.actorId}`
       );
     } catch (error) {
-      logger.error('Error creating activity:', error);
-      throw error;
+      this.logAndThrow('Error creating activity:', error);
     }
   }
 
+  /* =========================
+     Project Activities
+  ========================= */
+
   async getProjectActivities(
     projectId: string,
-    page: number = 1,
-    limit: number = 50
-  ): Promise<{ activities: any[]; total: number }> {
+    page = 1,
+    limit = 50
+  ): Promise<PaginatedResult<any>> {
     try {
-      const skip = (page - 1) * limit;
+      const { skip } = this.getPagination(page, limit);
 
       const [activities, total] = await Promise.all([
         Activity.find({ project: projectId })
@@ -55,18 +83,21 @@ class ActivityService {
 
       return { activities, total };
     } catch (error) {
-      logger.error('Error getting project activities:', error);
-      throw error;
+      this.logAndThrow('Error getting project activities:', error);
     }
   }
 
+  /* =========================
+     Task Activities
+  ========================= */
+
   async getTaskActivities(
     taskId: string,
-    page: number = 1,
-    limit: number = 50
-  ): Promise<{ activities: any[]; total: number }> {
+    page = 1,
+    limit = 50
+  ): Promise<PaginatedResult<any>> {
     try {
-      const skip = (page - 1) * limit;
+      const { skip } = this.getPagination(page, limit);
 
       const [activities, total] = await Promise.all([
         Activity.find({ task: taskId })
@@ -79,18 +110,21 @@ class ActivityService {
 
       return { activities, total };
     } catch (error) {
-      logger.error('Error getting task activities:', error);
-      throw error;
+      this.logAndThrow('Error getting task activities:', error);
     }
   }
 
+  /* =========================
+     User Activities
+  ========================= */
+
   async getUserActivities(
     userId: string,
-    page: number = 1,
-    limit: number = 50
-  ): Promise<{ activities: any[]; total: number }> {
+    page = 1,
+    limit = 50
+  ): Promise<PaginatedResult<any>> {
     try {
-      const skip = (page - 1) * limit;
+      const { skip } = this.getPagination(page, limit);
 
       const [activities, total] = await Promise.all([
         Activity.find({ actor: userId })
@@ -104,17 +138,20 @@ class ActivityService {
 
       return { activities, total };
     } catch (error) {
-      logger.error('Error getting user activities:', error);
-      throw error;
+      this.logAndThrow('Error getting user activities:', error);
     }
   }
 
-  async getActivityStats(projectId: string, days: number = 30): Promise<any> {
+  /* =========================
+     Activity Stats
+  ========================= */
+
+  async getActivityStats(projectId: string, days = 30): Promise<any> {
     try {
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - days);
 
-      const stats = await Activity.aggregate([
+      return await Activity.aggregate([
         {
           $match: {
             project: projectId,
@@ -125,7 +162,12 @@ class ActivityService {
           $group: {
             _id: {
               action: '$action',
-              date: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+              date: {
+                $dateToString: {
+                  format: '%Y-%m-%d',
+                  date: '$createdAt',
+                },
+              },
             },
             count: { $sum: 1 },
           },
@@ -134,11 +176,8 @@ class ActivityService {
           $sort: { '_id.date': 1 },
         },
       ]);
-
-      return stats;
     } catch (error) {
-      logger.error('Error getting activity stats:', error);
-      throw error;
+      this.logAndThrow('Error getting activity stats:', error);
     }
   }
 }

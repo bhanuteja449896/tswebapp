@@ -1,20 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { AuthRequest } from '../types/express';
-import { User } from '../models/User';
+import User from '../models/User';
 import { logger } from '../utils/logger';
 
-export class AppError extends Error {
-  statusCode: number;
-  isOperational: boolean;
-
-  constructor(message: string, statusCode: number) {
-    super(message);
-    this.statusCode = statusCode;
-    this.isOperational = true;
-    Error.captureStackTrace(this, this.constructor);
-  }
-}
+/* =========================
+   AUTHENTICATE
+========================= */
 
 export const authenticate = async (
   req: AuthRequest,
@@ -22,104 +14,137 @@ export const authenticate = async (
   next: NextFunction
 ): Promise<void> => {
   try {
+    const authHeader = req.headers.authorization;
     let token: string | undefined;
 
-    // Get token from header
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-      token = req.headers.authorization.split(' ')[1];
+    if (authHeader) {
+      token = authHeader.startsWith('Bearer ')
+        ? authHeader.split(' ')[1]
+        : authHeader;
     }
 
     if (!token) {
-      throw new AppError('Not authorized, no token provided', 401);
+      res.status(401).json({
+        success: false,
+        error: 'No token provided',
+      });
+      return;
     }
 
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret') as {
-      id: string;
-      email: string;
-      role: string;
-    };
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    ) as { userId: string; role: string };
 
-    // Check if user still exists
-    const user = await User.findById(decoded.id).select('-password');
+    const user = await User.findById(decoded.userId);
+
     if (!user) {
-      throw new AppError('User no longer exists', 401);
+      res.status(401).json({
+        success: false,
+        error: 'User not found',
+      });
+      return;
     }
 
-    // Attach user to request
     req.user = {
-      id: user._id.toString(),
+      userId: decoded.userId,
       email: user.email,
       role: user.role,
     };
 
     next();
-  } catch (error: any) {
-    if (error.name === 'JsonWebTokenError') {
-      next(new AppError('Invalid token', 401));
-    } else if (error.name === 'TokenExpiredError') {
-      next(new AppError('Token expired', 401));
-    } else {
-      next(error);
-    }
+  } catch (err) {
+    res.status(401).json({
+      success: false,
+      error: 'Invalid token',
+    });
   }
 };
 
-export const authorize = (...roles: string[]) => {
-  return (req: AuthRequest, res: Response, next: NextFunction): void => {
+/* =========================
+   AUTHORIZE
+========================= */
+
+export const authorize =
+  (...roles: string[]) =>
+  (req: AuthRequest, res: Response, next: NextFunction): void => {
     if (!req.user) {
-      throw new AppError('Not authorized', 401);
+      res.status(401).json({
+        success: false,
+        error: 'Not authenticated',
+      });
+      return;
     }
 
     if (!roles.includes(req.user.role)) {
-      throw new AppError(`Role ${req.user.role} is not authorized to access this route`, 403);
+      res.status(403).json({
+        success: false,
+        error: 'Insufficient permissions',
+      });
+      return;
     }
 
     next();
   };
-};
 
-export const errorHandler = (err: any, req: Request, res: Response, _next: NextFunction): void => {
-  let error = { ...err };
-  error.message = err.message;
+/* =========================
+   ERROR HANDLER
+========================= */
 
-  // Log error
+export const errorHandler = (
+  err: any,
+  req: Request,
+  res: Response,
+  _next: NextFunction
+): void => {
   logger.error({
     message: err.message,
     stack: err.stack,
-    url: req.url,
     method: req.method,
+    url: req.url,
   });
 
-  // Mongoose bad ObjectId
-  if (err.name === 'CastError') {
-    const message = 'Resource not found';
-    error = new AppError(message, 404);
-  }
-
-  // Mongoose duplicate key
-  if (err.code === 11000) {
-    const field = Object.keys(err.keyValue)[0];
-    const message = `${field} already exists`;
-    error = new AppError(message, 400);
-  }
-
-  // Mongoose validation error
+  // Validation error
   if (err.name === 'ValidationError') {
-    const message = Object.values(err.errors)
-      .map((val: any) => val.message)
-      .join(', ');
-    error = new AppError(message, 400);
+    res.status(400).json({
+      success: false,
+      error: Object.values(err.errors)
+        .map((e: any) => e.message)
+        .join(', '),
+    });
+    return;
   }
 
-  res.status(error.statusCode || 500).json({
-    success: false,
-    error: error.message || 'Server Error',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
-  });
-};
+  // Duplicate key
+  if (err.code === 11000) {
+    res.status(400).json({
+      success: false,
+      error: 'Duplicate field value',
+    });
+    return;
+  }
 
-export const notFound = (req: Request, res: Response, next: NextFunction): void => {
-  const error = new AppError(`Not Found - ${req.originalUrl}`, 404);
-  next(error);
+  // JWT error
+  if (err.name === 'JsonWebTokenError') {
+    res.status(401).json({
+      success: false,
+      error: 'Invalid token',
+    });
+    return;
+  }
+
+  // Production-safe response
+  if (process.env.NODE_ENV === 'production') {
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
+    return;
+  }
+
+  // Default
+  res.status(500).json({
+    success: false,
+    error: err.message || 'Server Error',
+  });
 };

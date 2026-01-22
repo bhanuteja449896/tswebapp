@@ -8,10 +8,6 @@ import { authLimiter } from '../middleware/rateLimiter';
 
 const router = Router();
 
-/* =========================
-   Validation Rules
-========================= */
-
 const registerValidation = [
   body('email')
     .isEmail()
